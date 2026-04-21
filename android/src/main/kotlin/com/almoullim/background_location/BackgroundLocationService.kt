@@ -14,7 +14,6 @@ import android.util.Log
 import android.widget.Toast
 import androidx.annotation.NonNull
 import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 
@@ -68,6 +67,7 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
+            bound = false
             service = null
         }
     }
@@ -89,6 +89,7 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
             channel.setMethodCallHandler(null)
         }
         context?.let { unregisterReceiverIfNeeded(it) }
+        receiver = null
         context = null
         activity = null
         service = null
@@ -128,6 +129,9 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
     }
 
     private fun isLocationServiceRunning(): Boolean {
+        if (bound && service != null) {
+            return true
+        }
         val appContext = context ?: return false
         val manager: ActivityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
@@ -235,7 +239,7 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
         override fun onReceive(context: Context, intent: Intent) {
             val location = intent.getParcelableExtra<Location>(LocationUpdatesService.EXTRA_LOCATION)
             if (location != null) {
-                val locationMap = HashMap<String, Any>()
+                val locationMap = HashMap<String, Any>(8)
                 locationMap["latitude"] = location.latitude
                 locationMap["longitude"] = location.longitude
                 locationMap["altitude"] = location.altitude

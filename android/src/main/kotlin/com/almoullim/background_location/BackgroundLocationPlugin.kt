@@ -8,6 +8,8 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 
 class BackgroundLocationPlugin : FlutterPlugin, ActivityAware {
 
+    private var activityBinding: ActivityPluginBinding? = null
+
     companion object {
 
         const val TAG = "com.almoullim.Log.Tag"
@@ -24,6 +26,7 @@ class BackgroundLocationPlugin : FlutterPlugin, ActivityAware {
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        activityBinding = binding
         val service = BackgroundLocationService.getInstance()
         service.setActivity(binding)
         binding.addRequestPermissionsResultListener(service)
@@ -38,7 +41,10 @@ class BackgroundLocationPlugin : FlutterPlugin, ActivityAware {
     }
 
     override fun onDetachedFromActivity() {
-        BackgroundLocationService.getInstance().setActivity(null)
+        val service = BackgroundLocationService.getInstance()
+        activityBinding?.removeRequestPermissionsResultListener(service)
+        activityBinding = null
+        service.setActivity(null)
     }
 
 }
