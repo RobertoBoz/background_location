@@ -26,11 +26,13 @@ class LocationUpdatesService : Service() {
         if (intent != null) {
             forceLocationManager = intent.getBooleanExtra("force_location_manager", false)
         }
+        configureLocationProvider()
         if (distanceFilter != null) {
             createLocationRequest(distanceFilter)
         } else {
             createLocationRequest(0.0)
         }
+        getLastLocation()
         return mBinder
     }
 
@@ -41,6 +43,7 @@ class LocationUpdatesService : Service() {
     private var mLocationManager: LocationManager? = null
     private var mFusedLocationCallback: LocationCallback? = null
     private var mLocationManagerCallback: LocationListener? = null
+    private var broadcastReceiver: BroadcastReceiver? = null
     private var mLocation: Location? = null
     private var isGoogleApiAvailable: Boolean = false
     private var isStarted: Boolean = false
@@ -59,7 +62,6 @@ class LocationUpdatesService : Service() {
         var UPDATE_INTERVAL_IN_MILLISECONDS: Long = 1000
         var FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2
         private const val NOTIFICATION_ID = 12345678
-        private lateinit var broadcastReceiver: BroadcastReceiver
 
         private const val STOP_SERVICE = "stop_service"
     }
@@ -104,32 +106,7 @@ class LocationUpdatesService : Service() {
             .isGooglePlayServicesAvailable(applicationContext)
         
         isGoogleApiAvailable = googleAPIAvailability == ConnectionResult.SUCCESS
-        
-
-        if (isGoogleApiAvailable && !this.forceLocationManager) {
-            mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-            
-            mFusedLocationCallback = object : LocationCallback() {
-                override fun onLocationResult(locationResult: LocationResult) {
-                    // Smart cast to 'Location' is impossible, because 'locationResult.lastLocation'
-                    // is a property that has open or custom getter
-                    val newLastLocation = locationResult.lastLocation
-                    if (newLastLocation is Location) {
-                        super.onLocationResult(locationResult)
-                        onNewLocation(newLastLocation)
-                    }
-                }
-            }
-        } else {
-            mLocationManager = getSystemService(LOCATION_SERVICE) as LocationManager?
-
-            mLocationManagerCallback = LocationListener { location ->
-                println(location.toString())
-                onNewLocation(location)
-            }
-        }
-
-        getLastLocation()
+        configureLocationProvider()
 
         val handlerThread = HandlerThread(TAG)
         handlerThread.start()
@@ -150,13 +127,16 @@ class LocationUpdatesService : Service() {
                 }
             }
         }
+        val receiver = broadcastReceiver
 
         val filter = IntentFilter()
         filter.addAction(STOP_SERVICE)
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(broadcastReceiver, filter, RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(broadcastReceiver, filter)
+        if (receiver != null) {
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
         }
 
 
@@ -167,11 +147,19 @@ class LocationUpdatesService : Service() {
     fun requestLocationUpdates() {
         Utils.setRequestingLocationUpdates(this, true)
         try {
-            if (isGoogleApiAvailable && !this.forceLocationManager) {
-                mFusedLocationClient!!.requestLocationUpdates(mLocationRequest!!,
-                    mFusedLocationCallback!!, Looper.myLooper())
-            } else {
-                mLocationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, mLocationManagerCallback!!)
+            if (mFusedLocationClient != null && mFusedLocationCallback != null && mLocationRequest != null) {
+                mFusedLocationClient?.requestLocationUpdates(
+                    mLocationRequest!!,
+                    mFusedLocationCallback!!,
+                    Looper.myLooper()
+                )
+            } else if (mLocationManager != null && mLocationManagerCallback != null) {
+                mLocationManager?.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    0L,
+                    0f,
+                    mLocationManagerCallback!!
+                )
             }
         } catch (unlikely: SecurityException) {
             Utils.setRequestingLocationUpdates(this, false)
@@ -201,15 +189,15 @@ class LocationUpdatesService : Service() {
 
     private fun getLastLocation() {
         try {
-            if(isGoogleApiAvailable && !this.forceLocationManager) {
-                mFusedLocationClient!!.lastLocation
-                        .addOnCompleteListener { task ->
+            if (mFusedLocationClient != null) {
+                mFusedLocationClient?.lastLocation
+                        ?.addOnCompleteListener { task ->
                             if (task.isSuccessful && task.result != null) {
                                 mLocation = task.result
                             }
                         }
-            } else {
-                mLocation = mLocationManager!!.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            } else if (mLocationManager != null) {
+                mLocation = mLocationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             }
         } catch (unlikely: SecurityException) {
         }
@@ -241,18 +229,63 @@ class LocationUpdatesService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isStarted = false
-        unregisterReceiver(broadcastReceiver)
+        broadcastReceiver?.let { receiver ->
+            try {
+                unregisterReceiver(receiver)
+            } catch (ignored: IllegalArgumentException) {
+                // Receiver may already be unregistered on some shutdown flows.
+            }
+        }
+        broadcastReceiver = null
         try {
-            if (isGoogleApiAvailable && !this.forceLocationManager) {
-                mFusedLocationClient!!.removeLocationUpdates(mFusedLocationCallback!!)
-            } else {
-                mLocationManager!!.removeUpdates(mLocationManagerCallback!!)
+            mFusedLocationClient?.let { client ->
+                mFusedLocationCallback?.let { callback ->
+                    client.removeLocationUpdates(callback)
+                }
+            }
+            mLocationManager?.let { locationManager ->
+                mLocationManagerCallback?.let { callback ->
+                    locationManager.removeUpdates(callback)
+                }
             }
 
             Utils.setRequestingLocationUpdates(this, false)
-            mNotificationManager!!.cancel(NOTIFICATION_ID)
+            mNotificationManager?.cancel(NOTIFICATION_ID)
         } catch (unlikely: SecurityException) {
             Utils.setRequestingLocationUpdates(this, true)
+        }
+    }
+
+    private fun configureLocationProvider() {
+        if (isGoogleApiAvailable && !forceLocationManager) {
+            if (mFusedLocationClient == null) {
+                mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+            }
+            if (mFusedLocationCallback == null) {
+                mFusedLocationCallback = object : LocationCallback() {
+                    override fun onLocationResult(locationResult: LocationResult) {
+                        val newLastLocation = locationResult.lastLocation
+                        if (newLastLocation is Location) {
+                            super.onLocationResult(locationResult)
+                            onNewLocation(newLastLocation)
+                        }
+                    }
+                }
+            }
+            mLocationManager = null
+            mLocationManagerCallback = null
+        } else {
+            if (mLocationManager == null) {
+                mLocationManager = getSystemService(LOCATION_SERVICE) as LocationManager?
+            }
+            if (mLocationManagerCallback == null) {
+                mLocationManagerCallback = LocationListener { location ->
+                    println(location.toString())
+                    onNewLocation(location)
+                }
+            }
+            mFusedLocationClient = null
+            mFusedLocationCallback = null
         }
     }
 
